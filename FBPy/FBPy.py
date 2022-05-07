@@ -19,12 +19,19 @@ class InvalidEmailORPass(Exception):
 class UserNotLoggin(Exception):
     pass
 
+class InvalidID(Exception):
+    pass
+
+class FacebookError(Exception):
+    pass
+
 class FacebookBase(Session):
     headers: dict[str, str]
     BASE_URL = 'https://mbasic.facebook.com'
     def __init__(self, cookiefile: Optional[str] = None) -> None:
         super().__init__()
         self.headers = {
+            'accept-language': 'en-US,en;q=0.9',
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": "Linux",
             "sec-fetch-dest": "document",
@@ -64,17 +71,23 @@ class FacebookBase(Session):
                 c.domain,
                 ['FALSE', 'TRUE'][c.domain_initial_dot],
                 c.path, ['FALSE', 'TRUE'][c.secure],
-                c.expires if c.expires == None else 0,
+                c.expires if not c.expires == None else 0,
                 c.name,
                 c.value
             ]))+'\n')
 
     def login(self, email: str, password: str):
-        html = self.get(self.endpoint('login')).text
+        st = self.get(self.endpoint('login'))
+        html=st.text
         post = dict((*re.findall(r'name="([\w]+)" value="([\w]+)"', html), ('login', 'Log In'), ('email', email), ('pass', password)))
         resp = self.post(self.endpoint(re.findall(r'action="(/[\w&-_=]+)"',html)[0].replace('amp;','')), data=post).text
         bs = BeautifulSoup(resp, 'html.parser')
-        if bs.find_all('div', attrs={'id': 'login_error'}):
+        title = (bs.title.text if bs.title else '').lower()
+        if bs.find_all('div', attrs={'id': 'login_error'}) or ('error' in title or 'log in' in title or 'find your' in title):
+            if 'error' in title:
+                raise FacebookError()
+            elif 'find your' in title:
+                return self.login(re.findall(r'/([\w.]+)\?', self.get(self.endpoint(email)).url)[0], password)
             raise InvalidEmailORPass('check your email & password')
 
 class Friend:
@@ -121,7 +134,7 @@ class Facebook(FacebookBase):
                     re.findall(r'\"(/[\w/]+add_fr[.\w_&%/\-=;?]+)\"',resp)
                     )]
                 if bs:
-                    resp = self.get(self.endpoint(bs[0].a['href'])).text
+                    resp = self.get(bs[0].a['href']).text
                 else:
                     break
             except Exception:
