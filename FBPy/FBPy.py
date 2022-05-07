@@ -25,6 +25,9 @@ class InvalidID(Exception):
 class FacebookError(Exception):
     pass
 
+class Checkpoint(Exception):
+    pass
+
 class FacebookBase(Session):
     headers: dict[str, str]
     BASE_URL = 'https://mbasic.facebook.com'
@@ -89,6 +92,8 @@ class FacebookBase(Session):
             elif 'find your' in title:
                 return self.login(re.findall(r'/([\w.]+)\?', self.get(self.endpoint(email)).url)[0], password)
             raise InvalidEmailORPass('check your email & password')
+        elif 'checkpoint' in resp.lower():
+            raise Checkpoint()
 
 class Friend:
     def __init__(self, add: str, requests: FacebookBase = FacebookBase(), name: Optional[str] = None) -> None:

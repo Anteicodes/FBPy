@@ -1,5 +1,4 @@
 from FBPy.FBPy import Facebook
-import re
 fb = Facebook()
 fb.login('', '')
 fb.dumps(open('cookie.txt', 'w'))
