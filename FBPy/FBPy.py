@@ -2,14 +2,20 @@ from __future__ import annotations
 from typing import (
     Generator,
     Optional,
-    Union
+    Union,
+    NewType
 )
+from PIL import Image
 from requests import Session
 from bs4 import BeautifulSoup
 from .utils import txt2json
 from io import (
     TextIOWrapper,
     StringIO
+)
+from io import (
+    BufferedReader,
+    BytesIO
 )
 import re
 
@@ -47,9 +53,9 @@ class FacebookBase(Session):
         self.cookiefile = cookiefile
         if cookiefile:
             self.load_cookie(cookiefile)
-
-    def endpoint(self, endp: str):
-        return self.BASE_URL.rstrip() + '/' + endp.lstrip()
+    @classmethod
+    def endpoint(cls, endp: str):
+        return cls.BASE_URL.rstrip() + '/' + endp.lstrip()
 
     @property
     def get_name(self):
@@ -94,6 +100,39 @@ class FacebookBase(Session):
             raise InvalidEmailORPass('check your email & password')
         elif 'checkpoint' in resp.lower():
             raise Checkpoint()
+class FriendRequest:
+    def __init__(self, name: str, confirm: str, delete: str, session: Facebook) -> None:
+        self.name = name
+        self.confirm_url = confirm
+        self.delete_url = delete
+        self.session =  session
+        self.id = re.findall(r'confirm=([0-9]+)', confirm)[0]
+    def confirm(self):
+        self.session.get(self.confirm_url)
+        for i in filter(lambda x:x.id == self.id, self.session.friend_request()):
+            return True
+        return False
+    def delete(self):
+        self.session.get(self.delete_url)
+        for i in filter(lambda x:x.id == self.id, self.session.friend_request()):
+            return True
+        return False
+    def __repr__(self) -> str:
+        return self.name
+class Message:
+    pass
+
+
+class TextMessage(Message):
+    def __init__(self, msg: str) -> None:
+        self.msg = msg
+
+class MediaMessage(TextMessage):
+    def __init__(self, msg: str, media_url: str) -> None:
+        super().__init__(msg)
+        self.url = media_url
+    def download(self):
+        pass
 
 class Friend:
     def __init__(self, add: str, requests: FacebookBase = FacebookBase(), name: Optional[str] = None) -> None:
@@ -101,7 +140,6 @@ class Friend:
         self.name = name
         self.add_friend = add.replace('amp;','')
         self.request = requests
-    
     def add(self):
         return self.request.get(self.request.endpoint(self.add_friend))
 
@@ -117,9 +155,51 @@ class Friend:
                 resp = self.request.get(self.request.endpoint(bs[0].a['href'])).text
             else:
                 break
-
     def __repr__(self) -> str:
         return f'name: {self.name} ID: {self.id}'
+class FriendMessage:
+    def __init__(self, session: Facebook, url: str, last_message: str, isread: bool, name: str) -> None:
+        self.name = name
+        self.session = session
+        self.url = session.endpoint(url.lstrip())
+        self.isread = isread
+        self.last_message = last_message
+    def fetchall_message(self):
+        pass
+    def send_text(self, text: str):
+        resp = BeautifulSoup(self.session.get(self.url).text, 'html.parser').find_all('form')[1]
+        self.session.headers['referer'] = self.url
+        data = dict([(i['name'], i.get('value','')) for i in resp.find_all('input')])
+        data.pop('like')
+        data.pop('send_photo')
+        data.update({'body': text})
+        return self.session.post(FacebookBase.endpoint(resp['action']), data=data)
+
+    def send_like(self):
+        resp = BeautifulSoup(self.session.get(self.url).text, 'html.parser').find_all('form')[1]
+        self.session.headers['referer'] = self.url
+        data = dict([(i['name'], i.get('value','')) for i in resp.find_all('input')])
+        data.pop('send_photo')
+        data.update({'like':'Like'})
+        return self.session.post(FacebookBase.endpoint(resp['action']), data=data)
+
+    def send_photo(self, files: list[str], text: str = ''):
+        resp = BeautifulSoup(self.session.get(self.url).text, 'html.parser').find_all('form')[1]
+        self.session.headers['referer'] = self.url
+        data = dict([(i['name'], i.get('value','')) for i in resp.find_all('input')])
+        data.pop('like')
+        data.update({'send_photo':'Add Photos'})
+        ph = self.session.post(FacebookBase.endpoint(resp['action']), data=data).text
+        data = dict([(i['name'], i['value']) for i in BeautifulSoup(ph, 'html.parser').find_all('input', attrs={'type':'hidden'})])
+        data.update({'body':text})
+        f = {n: ('a.jpg', open(i, 'rb')) for i,n in zip(files, ['file1', 'file2', 'file3'])}
+        if f.__len__() < 3:
+            f.update({'file'+(i+1).__str__(): ('b.jpg', b'') for i in range(f.__len__(), 3)})
+        return self.session.post('https://upload.facebook.com/_mupload_/mbasic/messages/attachment/photo/', data=data, files=f)
+
+
+    def __repr__(self) -> str:
+        return f"<name: {self.name}  msg:'{self.last_message}' read:{self.isread}>"
 
 class Facebook(FacebookBase):
     def __init__(self, cookiefile:Optional[str] = None):
@@ -144,4 +224,30 @@ class Facebook(FacebookBase):
                     break
             except Exception:
                 break
+    def messages(self):
+        x = []
+        for i in BeautifulSoup(self.get(self.endpoint('messages')).text, 'html.parser').find_all('td', attrs={'aria-hidden':'false'}):
+            h3 = i.find_all('h3')
+            x.append(FriendMessage(self, h3[0].a['href'], h3[1].span.text, h3[0]['class'][1] == 'ba', h3[0].text))
+        return x
+
+    def new_message(self, ids: list[str], text:  str, image: list[str] = []):
+        resp = self.get(self.endpoint('messages/compose'), params = {f'ids[{n}]': d for n, d in enumerate(ids)})
+        form = BeautifulSoup(resp.text, 'html.parser').find_all('form')
+        hdata = {x['name']: x['value'] for x in form[1].find_all('input')}
+        hdata.update({'body': text})
+        if image:
+            f = {n: ('a.jpg', open(i, 'rb')) for i,n in zip(image, ['file1', 'file2', 'file3'])}
+            if f.__len__() < 3:
+                f.update({'file'+(i+1).__str__(): ('b.jpg', b'') for i in range(f.__len__(), 3)})
+            return self.post(form[2]['action'], data=hdata, files=f)
+        else:
+            assert text
+            return self.post(self.endpoint('messages/send'), params={'icm':1}, data=hdata)
+
+    def friend_request(self):
+        resp = self.get(self.endpoint('/friends/center/requests/')).text
+        url = [i[0].replace('amp;','') for i in re.findall(r'([\w/.?]+(confirm|delete)=[\w%&;-=_.]+)', resp)]
+        return [ FriendRequest(n, self.endpoint(c), self.endpoint(d), self) for n, c, d in zip(re.findall(r'\?uid=[\w%_&=;.]+">([^<]+)', resp),url[::2], url[1::2])]
+
 
